@@ -27,24 +27,43 @@ namespace BTCPayServer.Services.Fees
             return feeRate;
         }
 
-        public Task RefreshCache(IEnumerable<int> blockTargets, CancellationToken cancellationToken)
+        public async Task RefreshCache(IEnumerable<int> blockTargets, CancellationToken cancellationToken)
         {
-            return Task.WhenAll(blockTargets.Select(async blockTarget =>
+            var batch = explorerClient.RPCClient.PrepareBatch();
+            var estimates = blockTargets
+                .Distinct()
+                .Select(blockTarget =>
+                    (BlockTarget: blockTarget,
+                        Estimate: batch.TryEstimateSmartFeeAsync(blockTarget, cancellationToken: cancellationToken)))
+                .ToArray();
+
+            try
+            {
+                await batch.SendBatchAsync(cancellationToken);
+            }
+            catch when (!cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+
+            foreach (var estimate in estimates)
             {
                 try
                 {
-                    var feeRate = await FetchFeeRate(blockTarget, cancellationToken);
-                    CacheFeeRate(blockTarget, feeRate);
+                    if (await estimate.Estimate is { FeeRate: { } feeRate })
+                        CacheFeeRate(estimate.BlockTarget, feeRate);
                 }
                 catch when (!cancellationToken.IsCancellationRequested)
                 {
                     // Keep the previous estimate until it expires.
                 }
-            }));
+            }
         }
 
         private async Task<FeeRate> FetchFeeRate(int blockTarget, CancellationToken cancellationToken) =>
-            (await explorerClient.GetFeeRateAsync(blockTarget, cancellationToken).ConfigureAwait(false)).FeeRate;
+            (await explorerClient.RPCClient.TryEstimateSmartFeeAsync(blockTarget, cancellationToken: cancellationToken)
+                .ConfigureAwait(false))?.FeeRate ??
+            throw new InvalidOperationException("Fee estimation unavailable");
 
         private void CacheFeeRate(int blockTarget, FeeRate feeRate) =>
             memoryCache.Set(GetCacheKey(blockTarget), feeRate, _expiration);
