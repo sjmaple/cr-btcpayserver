@@ -25,9 +25,10 @@ public class FeeProviderFactory : IFeeProviderFactory, IPeriodicTask
         foreach ((var network, var client) in ExplorerClients.GetAll())
         {
             List<IFeeProvider> providers = new List<IFeeProvider>();
+            var nbXplorerFeeProvider = new NBXplorerFeeProvider(client);
             if (network.IsBTC && Environment.NetworkType != ChainName.Regtest)
             {
-                providers.Add(new MempoolSpaceFeeProvider(
+                var mempoolSpaceFeeProvider = new MempoolSpaceFeeProvider(
                     MemoryCache,
                     $"MempoolSpaceFeeProvider-{network.CryptoCode}",
                     HttpClientFactory,
@@ -35,9 +36,13 @@ public class FeeProviderFactory : IFeeProviderFactory, IPeriodicTask
                     n.NBitcoinNetwork.ChainName == ChainName.Testnet)
                 {
                     CachedOnly = true
-                });
+                };
+                providers.Add(new BitcoinFeeProvider(client, mempoolSpaceFeeProvider, nbXplorerFeeProvider));
             }
-            providers.Add(new NBXplorerFeeProvider(client));
+            else
+            {
+                providers.Add(nbXplorerFeeProvider);
+            }
             providers.Add(new StaticFeeProvider(new FeeRate(100L, 1)));
             var fallback = new FallbackFeeProvider(providers.ToArray());
 
@@ -88,6 +93,7 @@ public class FeeProviderFactory : IFeeProviderFactory, IPeriodicTask
         {
             ClampFeeProvider cfp => RefreshCache(cfp.Inner),
             FallbackFeeProvider ffp => Task.WhenAll(ffp.Providers.Select(p => RefreshCache(p))),
+            BitcoinFeeProvider bitcoin => bitcoin.RefreshCache(),
             MempoolSpaceFeeProvider mempool => mempool.RefreshCache(),
             _ => Task.CompletedTask
         };
