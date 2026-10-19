@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Net.Http;
-using System.Threading;
 using System.Threading.Tasks;
 using BTCPayServer.HostedServices;
 using Microsoft.Extensions.Caching.Memory;
@@ -10,7 +8,7 @@ using NBitcoin;
 
 namespace BTCPayServer.Services.Fees;
 
-public class FeeProviderFactory : IFeeProviderFactory, IPeriodicTask
+public class FeeProviderFactory : IFeeProviderFactory
 {
     public FeeProviderFactory(
         BTCPayServerEnvironment Environment,
@@ -25,23 +23,15 @@ public class FeeProviderFactory : IFeeProviderFactory, IPeriodicTask
         foreach ((var network, var client) in ExplorerClients.GetAll())
         {
             List<IFeeProvider> providers = new List<IFeeProvider>();
-            var nbXplorerFeeProvider = new NBXplorerFeeProvider(client);
+            providers.Add(new NBXplorerFeeProvider(client));
             if (network.IsBTC && Environment.NetworkType != ChainName.Regtest)
             {
-                var mempoolSpaceFeeProvider = new MempoolSpaceFeeProvider(
+                providers.Add(new MempoolSpaceFeeProvider(
                     MemoryCache,
                     $"MempoolSpaceFeeProvider-{network.CryptoCode}",
                     HttpClientFactory,
                     network is BTCPayNetwork n &&
-                    n.NBitcoinNetwork.ChainName == ChainName.Testnet)
-                {
-                    CachedOnly = true
-                };
-                providers.Add(new BitcoinFeeProvider(client, mempoolSpaceFeeProvider, nbXplorerFeeProvider));
-            }
-            else
-            {
-                providers.Add(nbXplorerFeeProvider);
+                    n.NBitcoinNetwork.ChainName == ChainName.Testnet));
             }
             providers.Add(new StaticFeeProvider(new FeeRate(100L, 1)));
             var fallback = new FallbackFeeProvider(providers.ToArray());
@@ -73,28 +63,4 @@ public class FeeProviderFactory : IFeeProviderFactory, IPeriodicTask
         return _FeeProviders.TryGetValue(network, out var prov) ? prov : throw new NotSupportedException($"No fee provider for this network ({network.CryptoCode})");
     }
 
-    public async Task Do(CancellationToken cancellationToken)
-    {
-        try
-        {
-            await RefreshCache(_FeeProviders.Values);
-        }
-        // Do not spam logs if mempoolspace is down
-        catch (TaskCanceledException)
-        {
-        }
-        catch (HttpRequestException)
-        {
-        }
-    }
-    private Task RefreshCache(IEnumerable<IFeeProvider> feeProviders) => Task.WhenAll(feeProviders.Select(RefreshCache));
-    private static Task RefreshCache(IFeeProvider fp) =>
-        fp switch
-        {
-            ClampFeeProvider cfp => RefreshCache(cfp.Inner),
-            FallbackFeeProvider ffp => Task.WhenAll(ffp.Providers.Select(p => RefreshCache(p))),
-            BitcoinFeeProvider bitcoin => bitcoin.RefreshCache(),
-            MempoolSpaceFeeProvider mempool => mempool.RefreshCache(),
-            _ => Task.CompletedTask
-        };
 }
