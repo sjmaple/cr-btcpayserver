@@ -361,7 +361,7 @@ namespace BTCPayServer.Hosting
             services.AddSingleton<IHostedService>(provider => provider.GetService<WalletReceiveService>());
 
             RegisterCurrencyData(services);
-            services.AddSingleton<FeeProviderFactory>();
+            services.AddScheduledTask<FeeProviderFactory>(TimeSpan.FromMinutes(3.0));
             services.AddSingleton<IFeeProviderFactory, FeeProviderFactory>(f => f.GetRequiredService<FeeProviderFactory>());
 
             services.Configure<MvcOptions>((o) =>

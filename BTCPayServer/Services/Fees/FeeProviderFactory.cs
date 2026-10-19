@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 using BTCPayServer.HostedServices;
 using Microsoft.Extensions.Caching.Memory;
@@ -8,8 +10,17 @@ using NBitcoin;
 
 namespace BTCPayServer.Services.Fees;
 
-public class FeeProviderFactory : IFeeProviderFactory
+public class FeeProviderFactory : IFeeProviderFactory, IPeriodicTask
 {
+    private static readonly TimeSpan[] FeeTargets =
+    [
+        TimeSpan.Zero,
+        TimeSpan.FromMinutes(10.0),
+        TimeSpan.FromMinutes(60.0),
+        TimeSpan.FromHours(6.0),
+        TimeSpan.FromHours(24.0)
+    ];
+
     public FeeProviderFactory(
         BTCPayServerEnvironment Environment,
         ExplorerClientProvider ExplorerClients,
@@ -18,12 +29,18 @@ public class FeeProviderFactory : IFeeProviderFactory
         IMemoryCache MemoryCache)
     {
         _FeeProviders = new();
+        _NBXplorerFeeProviders = new();
 
         // TODO: Pluginify this
         foreach ((var network, var client) in ExplorerClients.GetAll())
         {
             List<IFeeProvider> providers = new List<IFeeProvider>();
-            providers.Add(new NBXplorerFeeProvider(client));
+            var nbXplorerFeeProvider = new NBXplorerFeeProvider(
+                client,
+                MemoryCache,
+                $"NBXplorerFeeProvider-{network.CryptoCode}");
+            providers.Add(nbXplorerFeeProvider);
+            _NBXplorerFeeProviders.Add((network, nbXplorerFeeProvider));
             if (network.IsBTC && Environment.NetworkType != ChainName.Regtest)
             {
                 providers.Add(new MempoolSpaceFeeProvider(
@@ -58,9 +75,16 @@ public class FeeProviderFactory : IFeeProviderFactory
     }
 
     private readonly Dictionary<BTCPayNetworkBase, IFeeProvider> _FeeProviders;
+    private readonly List<(BTCPayNetwork Network, NBXplorerFeeProvider Provider)> _NBXplorerFeeProviders;
     public IFeeProvider CreateFeeProvider(BTCPayNetworkBase network)
     {
         return _FeeProviders.TryGetValue(network, out var prov) ? prov : throw new NotSupportedException($"No fee provider for this network ({network.CryptoCode})");
     }
 
+    public Task Do(CancellationToken cancellationToken) =>
+        Task.WhenAll(_NBXplorerFeeProviders.Select(provider =>
+            provider.Provider.RefreshCache(
+                FeeTargets.Select(time =>
+                    (int)provider.Network.NBitcoinNetwork.Consensus.GetExpectedBlocksFor(time)),
+                cancellationToken)));
 }
